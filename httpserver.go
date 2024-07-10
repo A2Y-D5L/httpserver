@@ -1,4 +1,4 @@
-package serve
+package server
 
 import (
 	"context"
@@ -46,7 +46,7 @@ func WithMaxHeaderBytes(maxHeaderBytes int) ServerOption {
 	}
 }
 
-func HTTP(ctx context.Context, routes Routes, logger *slog.Logger, serverOptions ...ServerOption) error {
+func ServeHTTP(ctx context.Context, routes Routes, logger *slog.Logger, serverOptions ...ServerOption) error {
 	if logger == nil {
 		logger = slog.Default()
 	}
