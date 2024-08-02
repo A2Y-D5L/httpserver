@@ -1,4 +1,4 @@
-package serve
+package httpserver
 
 import (
 	"context"
@@ -14,22 +14,18 @@ import (
 	"time"
 )
 
-type Routes struct {
-	PathHandlers map[string]http.Handler
-	Middleware   []func(http.Handler) http.Handler
-}
 
-type ServerOption func(*http.Server)
+type Option func(*http.Server)
 
 // WithAddr sets the address the server will listen on.
-func WithAddr(addr string) ServerOption {
+func WithAddr(addr string) Option {
 	return func(srv *http.Server) {
 		srv.Addr = addr
 	}
 }
 
 // WithTLSConfig sets the server's TLS configuration.
-func WithTLSConfig(tlsConfig *tls.Config) ServerOption {
+func WithTLSConfig(tlsConfig *tls.Config) Option {
 	return func(srv *http.Server) {
 		srv.TLSConfig = tlsConfig
 	}
@@ -40,47 +36,33 @@ func WithTLSConfig(tlsConfig *tls.Config) ServerOption {
 // MaxHeaderBytes controls the maximum number of bytes the server will read
 // parsing the request header's keys and values, including the request line. It
 // does not limit the size of the request body.
-func WithMaxHeaderBytes(maxHeaderBytes int) ServerOption {
+func WithMaxHeaderBytes(maxHeaderBytes int) Option {
 	return func(srv *http.Server) {
 		srv.MaxHeaderBytes = maxHeaderBytes
 	}
 }
 
-func ServeHTTP(ctx context.Context, routes Routes, logger *slog.Logger, serverOptions ...ServerOption) error {
+func ServeHTTP(ctx context.Context, routes Routes, logger *slog.Logger, opts ...Option) error {
 	if logger == nil {
 		logger = slog.Default()
 	}
-	mux := setupMux(ctx, routes, logger)
-	srv := setupServer(ctx, mux, logger, serverOptions...)
+	mux := newHTTPServeMux(ctx, routes, logger)
+	srv := newHTTPServer(ctx, mux, logger, opts...)
 	return startServer(ctx, srv, logger)
 }
 
-func setupMux(ctx context.Context, routes Routes, logger *slog.Logger) *http.ServeMux {
+func newHTTPServeMux(ctx context.Context, routes Routes, logger *slog.Logger) *http.ServeMux {
 	mux := http.NewServeMux()
 	for path, handler := range routes.PathHandlers {
 		for _, mw := range routes.Middleware {
 			handler = mw(handler)
 		}
-		mux.Handle(path, handler)
+		mux.Handle(path, httpMiddlewareHandlePanic(ctx, logger, handler))
 	}
-	mux.Handle(path, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		defer func() {
-			if err := recover(); err != nil {
-				var errMsg string
-				if e, ok := err.(error); ok {
-					errMsg = e.Error()
-				} else {
-					errMsg = fmt.Sprintf("%v", err)
-				}
-				logger.ErrorContext(ctx, "panicked while handling "+r.Method+" "+r.URL.Path+":"+errMsg)
-				http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
-			}
-		}()
-	}))
-	return mux.ServeHTTP()
+	return mux
 }
 
-func handlePanic(ctx context.Context, logger *slog.Logger, handler http.Handler) http.Handler {
+func httpMiddlewareHandlePanic(ctx context.Context, logger *slog.Logger, handler http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		defer func() {
 			if err := recover(); err != nil {
@@ -98,7 +80,7 @@ func handlePanic(ctx context.Context, logger *slog.Logger, handler http.Handler)
 	})
 }
 
-func setupServer(ctx context.Context, mux *http.ServeMux, logger *slog.Logger, serverOptions ...ServerOption) *http.Server {
+func newHTTPServer(ctx context.Context, mux *http.ServeMux, logger *slog.Logger, serverOptions ...Option) *http.Server {
 	srv := &http.Server{
 		Addr:              getEnvVar("SERVER_ADDR", ":8080"),
 		ReadHeaderTimeout: getDurationEnvVar("READ_HEADER_TIMEOUT", 10*time.Second),

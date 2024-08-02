@@ -8,19 +8,31 @@ An opinionated Go HTTP server framework.
 [![License](https://img.shields.io/github/license/a2y-d5l/serve)](LICENSE)
 <!-- [![GitHub release (latest by date)](https://img.shields.io/github/v/release/a2y-d5l/serve)]() -->
 
-## Table of contents
-
-- [Getting started](#getting-started)
-- [Usage](#usage)
-- [License](#license)
-
-## Getting started
-
-todo
-
 ## Usage
 
-todo
+### Run an HTTP server
+
+```go
+package main
+
+import (
+    "github.com/A2Y-D5L/serve/httpserver"
+)
+
+func main() {
+    if err := httpserver.Serve(
+        context.Background(),
+        []httpserver.Route{{
+            Pattern: "GET /",
+            Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+                w.Write([]byte("Hello, World!"))
+            }),
+        }},
+    ); err != nil {
+        log.Fatal(err)
+    }
+}
+```
 
 ## License
 
