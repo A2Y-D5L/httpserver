@@ -1,6 +1,6 @@
 # [A2Y-D5L](https://github.com/a2y-d5l) / [serve](https://github.com/a2y-d5l/serve)
 
-An opinionated Go HTTP server framework.
+Go servers with a single function.
 
 [![Go Reference](https://pkg.go.dev/badge/github.com/A2Y-D5L/serve.svg)](https://pkg.go.dev/github.com/A2Y-D5L/serve)
 [![Go Report Card](https://goreportcard.com/badge/github.com/A2Y-D5L/serve)](https://goreportcard.com/report/github.com/A2Y-D5L/serve)

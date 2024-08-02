@@ -2,7 +2,6 @@ package httpserver
 
 import (
 	"context"
-	"crypto/tls"
 	"fmt"
 	"log/slog"
 	"net"
@@ -12,128 +11,71 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
+	"github.com/a2y-d5l/serve/internal/envvar"
 )
 
-
-type Option func(*http.Server)
-
-// WithAddr sets the address the server will listen on.
-func WithAddr(addr string) Option {
-	return func(srv *http.Server) {
-		srv.Addr = addr
-	}
+type Route struct {
+	Pattern    string
+	Handler    http.Handler
+	Middleware []func(http.Handler) http.Handler
 }
 
-// WithTLSConfig sets the server's TLS configuration.
-func WithTLSConfig(tlsConfig *tls.Config) Option {
-	return func(srv *http.Server) {
-		srv.TLSConfig = tlsConfig
-	}
-}
-
-// WithMaxHeaderBytes sets the server's max header bytes.
+// Serve HTTP requests for the provided routes. The server will gracefully shut
+// down when the provided context is done or a SIGINT or SIGTERM signal is
+// received.
 //
-// MaxHeaderBytes controls the maximum number of bytes the server will read
-// parsing the request header's keys and values, including the request line. It
-// does not limit the size of the request body.
-func WithMaxHeaderBytes(maxHeaderBytes int) Option {
-	return func(srv *http.Server) {
-		srv.MaxHeaderBytes = maxHeaderBytes
-	}
-}
-
-func ServeHTTP(ctx context.Context, routes Routes, logger *slog.Logger, opts ...Option) error {
-	if logger == nil {
-		logger = slog.Default()
-	}
-	mux := newHTTPServeMux(ctx, routes, logger)
-	srv := newHTTPServer(ctx, mux, logger, opts...)
-	return startServer(ctx, srv, logger)
-}
-
-func newHTTPServeMux(ctx context.Context, routes Routes, logger *slog.Logger) *http.ServeMux {
-	mux := http.NewServeMux()
-	for path, handler := range routes.PathHandlers {
-		for _, mw := range routes.Middleware {
-			handler = mw(handler)
-		}
-		mux.Handle(path, httpMiddlewareHandlePanic(ctx, logger, handler))
-	}
-	return mux
-}
-
-func httpMiddlewareHandlePanic(ctx context.Context, logger *slog.Logger, handler http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		defer func() {
-			if err := recover(); err != nil {
-				var errMsg string
-				if e, ok := err.(error); ok {
-					errMsg = e.Error()
-				} else {
-					errMsg = fmt.Sprintf("%v", err)
-				}
-				logger.ErrorContext(ctx, "panicked while handling "+r.Method+" "+r.URL.Path+":"+errMsg)
-				http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
-			}
-		}()
-		handler.ServeHTTP(w, r)
-	})
-}
-
-func newHTTPServer(ctx context.Context, mux *http.ServeMux, logger *slog.Logger, serverOptions ...Option) *http.Server {
-	srv := &http.Server{
-		Addr:              getEnvVar("SERVER_ADDR", ":8080"),
-		ReadHeaderTimeout: getDurationEnvVar("READ_HEADER_TIMEOUT", 10*time.Second),
-		Handler:           mux,
-		ErrorLog:          slog.NewLogLogger(logger.Handler(), slog.LevelError),
-		BaseContext: func(net.Listener) context.Context {
-			if ctx == nil {
-				return context.Background()
-			}
-			return ctx
-		},
-	}
-	for _, opt := range serverOptions {
-		opt(srv)
-	}
-	return srv
-}
-
-func getEnvVar(key, fallback string) string {
-	if value, exists := os.LookupEnv(key); exists {
-		return value
-	}
-	return fallback
-}
-
-func getDurationEnvVar(key string, fallback time.Duration) time.Duration {
-	if value, exists := os.LookupEnv(key); exists {
-		if duration, err := time.ParseDuration(value); err == nil {
-			return duration
-		}
-	}
-	return fallback
-}
-
-func startServer(ctx context.Context, srv *http.Server, logger *slog.Logger) error {
+// The server is automatically configured with sensible defaults that can be 
+// overridden by functional options. The options are applied in the order they
+// are provided. Several options are provided:
+//
+// - Address: sets the TCP address for the server to listen on, in the form
+//   "host:port". Default: the value of the HTTP_SERVER_ADDR environment 
+//   variable or ":8080".
+//
+// - ErrorLog: sets an optional logger for errors accepting connections,
+//   unexpected behavior from handlers, and underlying FileSystem errors. 
+//   Default: the default slog.Logger.
+//
+// - ReadHeaderTimeout: sets the maximum duration for reading the entire request
+//   header. Default: 10 seconds.
+//
+// - TLSConfig: provides a TLS configuration for use by ServeTLS and
+//   ListenAndServeTLS. Default: nil.
+//
+// - MaxHeaderBytes: controls the maximum number of bytes the server will read
+//   parsing the request header's keys and values, including the request line.
+//   Default: 1 MiB.
+//
+// Defining Custom Options:
+//
+// Custom options can be created by defining a closure that
+// accepts a pointer to an http.Server and returns a function that sets a field
+// on the server. For example, to set the server's address:
+//
+//     func Address(addr string) func(*http.Server) {
+//         return func(srv *http.Server) {
+//             srv.Addr = addr
+//         }
+//     }
+func Serve(ctx context.Context, routes []Route, options ...func(*http.Server)) error {
+	server := newServer(ctx, routes, options...)
 	errCh := make(chan error)
 	go func() {
-		slog.Info("server listening on " + srv.Addr)
-		switch {
-		case srv.TLSConfig != nil:
-			errCh <- srv.ListenAndServeTLS("", "")
-		default:
-			errCh <- srv.ListenAndServe()
+		if server.TLSConfig != nil {
+			errCh <- server.ListenAndServeTLS("", "")
+        } else {
+			errCh <- server.ListenAndServe()
 		}
 	}()
 	shutdownCh := make(chan os.Signal, 1)
 	signal.Notify(shutdownCh, syscall.SIGINT, syscall.SIGTERM)
 	go func() {
 		sig := strings.ToUpper((<-shutdownCh).String())
-		logger.Debug(sig + " signal received, shutting down server")
+		slog.Debug(sig + " signal received, shutting down server")
 		ctx, cancel := context.WithTimeout(ctx, 29*time.Second)
 		defer cancel()
-		errCh <- srv.Shutdown(ctx)
+		errCh <- server.Shutdown(ctx)
 	}()
 	for {
 		select {
@@ -147,4 +89,30 @@ func startServer(ctx context.Context, srv *http.Server, logger *slog.Logger) err
 			return nil
 		}
 	}
+}
+
+func newServer(ctx context.Context, routes []Route, options ...func(*http.Server)) *http.Server {
+	mux := http.NewServeMux()
+	for _, r := range routes {
+		for _, mw := range r.Middleware {
+			r.Handler = mw(r.Handler)
+		}
+	}
+	srv := &http.Server{
+		ReadHeaderTimeout: envvar.GetDuration("HTTP_SERVER_READ_HEADER_TIMEOUT", 10*time.Second),
+		Handler:           handlePanic(mux),
+		ErrorLog:          slog.NewLogLogger(slog.Default().Handler(), slog.LevelError),
+        Addr:              envvar.Get("HTTP_SERVER_ADDR", ":8080"),
+        MaxHeaderBytes:    envvar.GetInt("HTTP_SERVER_MAX_HEADER_BYTES", http.DefaultMaxHeaderBytes),
+		BaseContext: func(net.Listener) context.Context {
+			if ctx == nil {
+				return context.Background()
+			}
+			return ctx
+		},
+	}
+	for _, opt := range options {
+		opt(srv)
+	}
+	return srv
 }

@@ -1,5 +1,11 @@
 package httpserver
 
+import (
+    "context"
+    "fmt"
+    "net/http"
+    "slog"
+)
 
 func handlePanic(ctx context.Context, logger *slog.Logger, handler http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
