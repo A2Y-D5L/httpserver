@@ -2,8 +2,8 @@ package httpserver
 
 import (
 	"crypto/tls"
+	"log/slog"
 	"net/http"
-	"slog"
 	"time"
 )
 

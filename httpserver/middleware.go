@@ -1,13 +1,12 @@
 package httpserver
 
 import (
-    "context"
-    "fmt"
-    "net/http"
-    "slog"
+	"fmt"
+	"log/slog"
+	"net/http"
 )
 
-func handlePanic(ctx context.Context, logger *slog.Logger, handler http.Handler) http.Handler {
+func handlePanic(h http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		defer func() {
 			if err := recover(); err != nil {
@@ -17,10 +16,10 @@ func handlePanic(ctx context.Context, logger *slog.Logger, handler http.Handler)
 				} else {
 					errMsg = fmt.Sprintf("%v", err)
 				}
-				logger.ErrorContext(ctx, "panicked while handling "+r.Method+" "+r.URL.Path+":"+errMsg)
+				slog.Error("panicked while handling " + r.Method + " " + r.URL.Path + ":" + errMsg)
 				http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
 			}
 		}()
-		handler.ServeHTTP(w, r)
+		h.ServeHTTP(w, r)
 	})
 }
